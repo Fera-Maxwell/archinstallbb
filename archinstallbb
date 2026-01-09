@@ -1,0 +1,329 @@
+#!/bin/bash
+
+# --- 0. CHECK ---
+if [ "$EUID" -ne 0 ]; then
+	clear
+	echo "THIS SCRIPT IS NOT RAN AS ROOT"
+	echo "PLEASE RUN IT AS ROOT"
+	exit 1
+fi
+
+# --- 1. WELCOME ---
+echo "--------------------------------------------------------"
+echo "  Welcome to the CUSTOM ARCHINSTALL (Fera-Edition) :>   "
+echo "  'Because original archinstall is a mess'"
+echo "--------------------------------------------------------"
+
+# --- 2. DISK SELECTION ---
+echo "Available Disks:"
+lsblk -dno NAME,SIZE,MODEL | grep -v "loop\|0B" 
+echo ""
+
+read -p "What is your DISK?: " DISK
+
+if [ ! -b "$DISK" ]; then
+	echo "Error: $DISK is not a block device. (dummi)"
+	exit 1
+fi
+
+# --- 3. PARTITION LOGIC ---
+if [ -d "/sys/firmware/efi" ]; then
+	FMT="gpt"
+	MODE="UEFI"
+	echo "Detected $MODE mode. Using $FMT table."
+	read -p "How many partitions do you need?: " PARTS
+	for (( i=1; i<=$PARTS; i++ )); do
+		read -p "Enter size for PART$i (M=Mega, G=Giga, 0=Rest): " SIZE
+		if [[ "$SIZE" == *[Bb]* ]]; then
+			echo "I see you typed 'b' in your SIZE, don't worry I calculated that"
+			SIZE=${SIZE^^}
+			SIZE=${SIZE%B}
+		fi
+		declare "PART$i=$SIZE"
+	done
+
+	for (( i=1; i<=$PARTS; i++ )); do
+		read -p "What should PART$i be? (EXT4, SWAP, EFI, BTRFS, XFS): " MKFS
+		declare "TYPE$i=${MKFS,,}"
+		if [[ "${MKFS,,}" == "swap" ]]; then
+			echo "   -> Detected SWAP - Auto-assigning Role:S and Mount:none"
+			declare "ROLE$i=S"
+			declare "MNT$i=none"
+		elif [[ "${MKFS,,}" == "efi" ]]; then
+			echo "   -> Detected EFI - Auto-assigning Role:B and Mount:/mnt/boot"
+			declare "ROLE$i=B"
+			declare "MNT$i=/mnt/boot"
+		else
+			read -p "What is PART$i? (R: ROOT; H: HOME; X: ANY): " ROLE
+			declare "ROLE$i=${ROLE^^}"
+			read -p "Where should PART$i be mounted? (/mnt is ROOT, or 'none'): " MOUNT
+			declare "MNT$i=$MOUNT"
+		fi
+	done
+else
+	FMT="msdos"
+	MODE="BIOS"
+	echo "Detected $MODE mode. Using $FMT table."
+	read -p "How many partitions do you need?: " PARTS
+	for (( i=1; i<=$PARTS; i++ )); do
+		read -p "Enter size for PART$i (M=Mega, G=Giga, 0=Rest): " SIZE
+		if [[ "$SIZE" == *[Bb]* ]]; then
+			echo "I see you typed 'b' in your SIZE, don't worry I calculated that"
+			SIZE=${SIZE^^}
+			SIZE=${SIZE%B}
+		fi
+		declare "PART$i=$SIZE"
+	done
+
+	for (( i=1; i<=$PARTS; i++ )); do
+		read -p "What should PART$i be? (EXT4, SWAP, BOOT, BTRFS): " MKFS
+		declare "TYPE$i=${MKFS,,}"
+		if [[ "${MKFS,,}" == "swap" ]]; then
+			echo "   -> Detected SWAP - Auto-assigning Role:S and Mount:none"
+			declare "ROLE$i=S"
+			declare "MNT$i=none"
+		elif [[ "${MKFS,,}" == "boot" ]]; then
+			echo "   -> Detected BOOT - Auto-assigning Role:B and Mount:/mnt/boot"
+			declare "ROLE$i=B"
+			declare "MNT$i=/mnt/boot"
+		else
+			read -p "What is PART$i? (B: BOOT; R: ROOT; S: SWAP; H: HOME; X: ANY): " ROLE
+			declare "ROLE$i=${ROLE^^}"
+			read -p "Where should PART$i be mounted? (/mnt is ROOT, or 'none'): " MOUNT
+			declare "MNT$i=$MOUNT"
+		fi
+	done
+fi
+
+# --- 4. SUMMARY ---
+clear
+echo -e "\n--- Target Layout for $DISK ---"
+for (( i=1; i<=$PARTS; i++ )); do
+	V_SIZE="PART$i"; V_TYPE="TYPE$i"; V_ROLE="ROLE$i"; V_MNT="MNT$i"
+	echo "Partition $i -> Size: ${!V_SIZE} | Format: ${!V_TYPE} | Role: ${!V_ROLE} | Mount: ${!V_MNT}"
+done
+printf "$MODE: $FMT\n"
+echo "--------------------------------------------------------"
+read -p "Does this look correct? (y/n): " CONFIRM
+
+if [[ "$CONFIRM" != [yY] ]]; then
+	echo "Aborting."
+	exit 0
+fi
+
+# --- 5. THE SLICER ---
+echo "Nuking $DISK and slicing new partitions..."
+umount -l ${DISK}* 2>/dev/null || true
+wipefs -a "$DISK"
+sgdisk --zap-all "$DISK"
+sgdisk -o "$DISK"
+
+for (( i=1; i<=$PARTS; i++ )); do
+	VAR_SIZE="PART$i"; VAR_TYPE="TYPE$i"
+	SIZE=${!VAR_SIZE}
+	TYPE=${!VAR_TYPE}
+	
+	[[ "$SIZE" == "0" ]] && FINAL_SIZE="0" || FINAL_SIZE="+$SIZE"
+
+	if [[ "$TYPE" == "efi" ]]; then G_TYPE="ef00"
+	elif [[ "$TYPE" == "swap" ]]; then G_TYPE="8200"
+	else G_TYPE="8300"; fi
+
+	sgdisk -n "$i:0:$FINAL_SIZE" -t "$i:$G_TYPE" "$DISK"
+done
+
+partprobe "$DISK"
+sleep 2
+
+# --- 6. FORMATTING & MOUNTING ---
+[[ $DISK == *"nvme"* ]] && P="p" || P=""
+
+# Step A: Format
+for (( i=1; i<=$PARTS; i++ )); do
+	PP="${DISK}${P}${i}"
+	VAR_TYPE="TYPE$i"
+	FORMAT=${!VAR_TYPE}
+
+	case $FORMAT in
+		efi|fat32)  mkfs.fat -F 32 "$PP" ;;
+		boot)       mkfs.ext2 -F "$PP" ;;
+		swap)       mkswap "$PP" ;;
+		ext4)       mkfs.ext4 -F "$PP" ;;
+		btrfs)      mkfs.btrfs -f "$PP" ;;
+		xfs)        mkfs.xfs -f "$PP" ;;
+	esac
+done
+
+# Step B: Smart Mount (Pass 1: Root)
+for (( i=1; i<=$PARTS; i++ )); do
+	VAR_MNT="MNT$i"; VAR_ROLE="ROLE$i"
+	if [[ "${!VAR_ROLE}" == "R" ]]; then
+		ROOT="${!VAR_MNT}"
+		mkdir -p "$ROOT"
+		mount "${DISK}${P}${i}" "$ROOT"
+	fi
+done
+
+# Step B: Smart Mount (Pass 2: Others & Swap)
+for (( i=1; i<=$PARTS; i++ )); do
+	PP="${DISK}${P}${i}"
+	VAR_TYPE="TYPE$i"; VAR_MNT="MNT$i"; VAR_ROLE="ROLE$i"
+	FORMAT=${!VAR_TYPE}; MP=${!VAR_MNT}
+
+	if [ "$FORMAT" == "swap" ]; then
+		swapon "$PP"
+	elif [[ "${!VAR_ROLE}" != "R" ]] && [ "$MP" != "none" ]; then
+		mkdir -p "$MP"
+		mount "$PP" "$MP"
+	fi
+done
+
+# --- 7. PACSTRAP ---
+mount -t efivarfs efivarfs /sys/firmware/efi/efivars
+echo "Disk is ready for pacstrap!"
+echo "Internet check! Which driver do you want?"
+echo "1) NetworkManager (Standard/Easy)"
+echo "2) iwd (Minimalist/Fast)"
+echo "3) wpa_supplicant (The Old School)"
+read -p "Selection: " NETCHOICE
+
+case $NETCHOICE in
+	1) NET_PKG="networkmanager"; NET_SVC="NetworkManager" ;;
+	2) NET_PKG="iwd"; NET_SVC="iwd" ;;
+	3) NET_PKG="wpa_supplicant"; NET_SVC="wpa_supplicant" ;;
+	*) NET_PKG=""; NET_SVC="" ;;
+esac
+echo -e "What do you want with your pacstrap?\n(Basically extra stuff with your dish)"
+read -p "> " ADDONS
+
+printf "Pacstrapping...\nMa wenor...\mand by wenor...\nlets just say\nmy kernel\n"
+pacstrap -K "$ROOT" base linux linux-firmware sudo $NET_PKG $ADDONS
+
+echo "Writing the map (fstab)..."
+genfstab -U "$ROOT" >> "$ROOT/etc/fstab"
+
+# --- 8. BOOTLOADER ---
+for (( i=1; i<=$PARTS; i++ )); do
+	PP="${DISK}${P}${i}"
+	VAR_ROLE="ROLE$i"
+	case ${!VAR_ROLE} in
+		R) RUUID=$(blkid -s UUID -o value "$PP") ;;
+		B) BUUID=$(blkid -s UUID -o value "$PP") ;;
+		S) SUUID=$(blkid -s UUID -o value "$PP") ;;
+		H) HUUID=$(blkid -s UUID -o value "$PP") ;;
+	esac
+done
+
+if [[ "$MODE" == "UEFI" ]]; then
+	echo "Alrightttttttttttt... Now do you wanna...."
+	echo "1) GRUB (The Classic)"
+	echo "2) LIMINE (Cool choice)"
+	echo "3) None (I'll do it myself, bitch)"
+	read -p "Selection: " BOOTCHOICE
+
+	case $BOOTCHOICE in
+		1)
+			echo "Installing GRUB..."
+			arch-chroot "$ROOT" pacman -S --noconfirm grub efibootmgr
+			arch-chroot "$ROOT" grub-install --target=x86_64-efi --bootloader-id=GRUB
+			arch-chroot "$ROOT" grub-mkconfig -o /boot/grub/grub.cfg
+			echo "Configured GRUB! You can safely reboot now"
+			;;
+		2)
+			echo "Installing LIMINE..."
+			arch-chroot "$ROOT" pacman -S --noconfirm limine efibootmgr
+			for (( j=1; j<=$PARTS; j++ )); do
+				VAR_ROLE="ROLE$j"
+				if [[ "${!VAR_ROLE}" == "B" ]]; then B_PART_NUM=$j; fi
+			done
+			B_PART_NUM=${B_PART_NUM:-1}
+			arch-chroot "$ROOT" mkdir -p /boot/EFI/BOOT
+			arch-chroot "$ROOT" cp /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/
+			(/usr/bin/cat <<EOF
+TIMEOUT=5
+:Arch Linux
+    PROTOCOL=linux
+    KERNEL_PATH=boot:///vmlinuz-linux
+    MODULE_PATH=boot:///initramfs-linux.img
+    CMDLINE=root=UUID=$RUUID 
+EOF
+) > "$ROOT/boot/limine.conf"
+			arch-chroot "$ROOT" efibootmgr --create --entities --disk "$DISK" --part "$B_PART_NUM" --loader /EFI/BOOT/BOOTX64.EFI --label "Limine"
+			;;
+		*)
+			echo "Skipping bootloader. Good luck, soldier."
+			;;
+	esac
+else
+	echo "Alrightttttttttttt... now just Sit tight"
+	arch-chroot "$ROOT" bash -c "pacman -S --noconfirm grub && grub-install --target=i386-pc \"$DISK\" && grub-mkconfig -o /boot/grub/grub.cfg"
+fi
+
+# --- 9. USERSPACE ---
+echo "Now to make your system usable so you don't go 'Aaaa why can't I login!?'"
+read -p 'What is your HOSTNAME? (Computers online name): ' HOSTNAME
+read -sp 'Now root password? *Looks away*: ' ROOTPSWD
+echo -e "\n"
+read -p "*peeks* ok now LOCATION? (example 'Europe/Istanbul'): " ZONEINFO
+echo "root:$ROOTPSWD" | arch-chroot "$ROOT" chpasswd
+arch-chroot "$ROOT" bash -c "ln -sf /usr/share/zoneinfo/$ZONEINFO /etc/localtime && hwclock --systohc"
+arch-chroot "$ROOT" bash -c "echo $HOSTNAME > /etc/hostname"
+if [ -n "$NET_SVC" ]; then
+	arch-chroot "$ROOT" systemctl enable "$NET_SVC"
+fi
+
+echo "ALMOST finished... wanna make an user? (For people who doesn't wanna run ONLY root)"
+read -n1 -rp "[Y/N]: " USER
+echo ""
+
+if [[ "$USER" =~ ^[Yy]$ ]]; then
+	read -p "Username: " USERNAME
+	read -sp "Password: " USERPSWD
+	echo -e "\n"
+	read -n1 -rp "Give $USERNAME sudo powers (WHEEL group)? [Y/N]: " USERWHEEL
+	echo -e "\n"
+	read -p "Other groups? (Press 'L' for list): " USERGROUPS
+	
+	if [[ "${USERGROUPS,,}" == "l" ]]; then
+		echo "-----------------------------------------------------------------------"
+		echo "  audio, video, storage, optical, input, kvm, lp, network, scanner"
+		echo "-----------------------------------------------------------------------"
+		read -p "Enter groups: " USERGROUPS
+	fi
+	
+	echo "Processing groups..."
+	# Smart Format Fixer (Space or Comma)
+	if [[ "$USERGROUPS" == *","* ]]; then
+		USERGROUPS=${USERGROUPS// /}
+	else
+		USERGROUPS=$(echo "$USERGROUPS" | tr -s ' ' ',')
+	fi
+	USERGROUPS=$(echo "$USERGROUPS" | sed 's/^,//;s/,$//')
+
+	FINAL_GROUPS="$USERGROUPS"
+	if [[ "$USERWHEEL" =~ ^[Yy]$ ]]; then
+		[[ -z "$FINAL_GROUPS" ]] && FINAL_GROUPS="wheel" || FINAL_GROUPS="${FINAL_GROUPS%,},wheel"
+	fi
+
+	echo "Creating user $USERNAME with groups: $FINAL_GROUPS"
+	arch-chroot "$ROOT" useradd -m -G "$FINAL_GROUPS" "$USERNAME"
+	echo "$USERNAME:$USERPSWD" | arch-chroot "$ROOT" chpasswd
+	
+	if [[ "$USERWHEEL" =~ ^[Yy]$ ]]; then
+		arch-chroot "$ROOT" sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+	fi
+fi
+
+# --- 10. ENDING ---
+clear
+echo "Congratulations captain! We got to the other end of the factory floor!"
+echo "To run Arch you just have to reboot... I mean I can reboot for you :3c"
+read -n1 -rp "[Y/N]: " ENDING
+echo ""
+if [[ $ENDING =~ ^[Yy]$ ]]; then
+	echo "Restarting..."
+	umount -R "$ROOT"
+	reboot now
+fi
+echo "Ok I won't... exit manually when ready."
+exit 0

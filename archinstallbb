@@ -11,7 +11,7 @@ fi
 # --- 1. WELCOME ---
 echo "--------------------------------------------------------"
 echo "  Welcome to the CUSTOM ARCHINSTALL (Fera-Edition) :>   "
-echo "  'Because original archinstall is a mess'"
+echo "  'Because original archinstall is a mess'               "
 echo "--------------------------------------------------------"
 
 # --- 2. DISK SELECTION ---
@@ -19,10 +19,16 @@ echo "Available Disks:"
 lsblk -dno NAME,SIZE,MODEL | grep -v "loop\|0B" 
 echo ""
 
-read -p "What is your DISK?: " DISK
+[[ "$DISK" != /dev/* ]] && DISK="/dev/$DISK"
+
+if [[ "$DISK" =~ [0-9]+$ ]]; then
+	echo "It looks like you entered a partition instead of a disk. Fixing..."
+	DISK="${DISK%[0-9]*}"
+	echo "Using disk: $DISK"
+fi
 
 if [ ! -b "$DISK" ]; then
-	echo "Error: $DISK is not a block device. (dummi)"
+	echo "Error: $DISK is not a block device."
 	exit 1
 fi
 
@@ -33,17 +39,17 @@ if [ -d "/sys/firmware/efi" ]; then
 	echo "Detected $MODE mode. Using $FMT table."
 	read -p "How many partitions do you need?: " PARTS
 	for (( i=1; i<=$PARTS; i++ )); do
-		read -p "Enter size for PART$i (M=Mega, G=Giga, 0=Rest): " SIZE
-		if [[ "$SIZE" == *[Bb]* ]]; then
-			echo "I see you typed 'b' in your SIZE, don't worry I calculated that"
-			SIZE=${SIZE^^}
-			SIZE=${SIZE%B}
-		fi
-		declare "PART$i=$SIZE"
+	read -p "Enter size for PART$i (M=Mega, G=Giga, 0=Rest): " SIZE
+	if [[ "$SIZE" == *[Bb]* ]]; then
+		echo "I see you typed 'b' in your SIZE, don't worry I calculated that"
+		SIZE=${SIZE^^}
+		SIZE=${SIZE%B}
+	fi
+	declare "PART$i=$SIZE"
 	done
 
 	for (( i=1; i<=$PARTS; i++ )); do
-		read -p "What should PART$i be? (EXT4, SWAP, EFI, BTRFS, XFS): " MKFS
+		read -p "What should PART$i be? (EXT4, SWAP, BOOT, BTRFS, XFS): " MKFS
 		declare "TYPE$i=${MKFS,,}"
 		if [[ "${MKFS,,}" == "swap" ]]; then
 			echo "   -> Detected SWAP - Auto-assigning Role:S and Mount:none"
@@ -66,13 +72,13 @@ else
 	echo "Detected $MODE mode. Using $FMT table."
 	read -p "How many partitions do you need?: " PARTS
 	for (( i=1; i<=$PARTS; i++ )); do
-		read -p "Enter size for PART$i (M=Mega, G=Giga, 0=Rest): " SIZE
-		if [[ "$SIZE" == *[Bb]* ]]; then
-			echo "I see you typed 'b' in your SIZE, don't worry I calculated that"
-			SIZE=${SIZE^^}
-			SIZE=${SIZE%B}
-		fi
-		declare "PART$i=$SIZE"
+	read -p "Enter size for PART$i (M=Mega, G=Giga, 0=Rest): " SIZE
+	if [[ "$SIZE" == *[Bb]* ]]; then
+		echo "I see you typed 'b' in your SIZE, don't worry I calculated that"
+		SIZE=${SIZE^^}
+		SIZE=${SIZE%B}
+	fi
+	declare "PART$i=$SIZE"
 	done
 
 	for (( i=1; i<=$PARTS; i++ )); do
@@ -102,7 +108,7 @@ for (( i=1; i<=$PARTS; i++ )); do
 	V_SIZE="PART$i"; V_TYPE="TYPE$i"; V_ROLE="ROLE$i"; V_MNT="MNT$i"
 	echo "Partition $i -> Size: ${!V_SIZE} | Format: ${!V_TYPE} | Role: ${!V_ROLE} | Mount: ${!V_MNT}"
 done
-printf "$MODE: $FMT\n"
+printf "$MODE: $FMT"
 echo "--------------------------------------------------------"
 read -p "Does this look correct? (y/n): " CONFIRM
 
@@ -145,12 +151,12 @@ for (( i=1; i<=$PARTS; i++ )); do
 	FORMAT=${!VAR_TYPE}
 
 	case $FORMAT in
-		efi|fat32)  mkfs.fat -F 32 "$PP" ;;
-		boot)       mkfs.ext2 -F "$PP" ;;
-		swap)       mkswap "$PP" ;;
-		ext4)       mkfs.ext4 -F "$PP" ;;
-		btrfs)      mkfs.btrfs -f "$PP" ;;
-		xfs)        mkfs.xfs -f "$PP" ;;
+		efi|fat32)	mkfs.fat -F 32 "$PP" ;;
+		boot)				mkfs.ext2 -F "$PP" ;;
+		swap)     	mkswap "$PP" ;;
+		ext4)     	mkfs.ext4 -F "$PP" ;;
+		btrfs)    	mkfs.btrfs -f "$PP" ;;
+		xfs)      	mkfs.xfs -f "$PP" ;;
 	esac
 done
 
@@ -179,7 +185,6 @@ for (( i=1; i<=$PARTS; i++ )); do
 done
 
 # --- 7. PACSTRAP ---
-mount -t efivarfs efivarfs /sys/firmware/efi/efivars
 echo "Disk is ready for pacstrap!"
 echo "Internet check! Which driver do you want?"
 echo "1) NetworkManager (Standard/Easy)"
@@ -197,7 +202,7 @@ echo -e "What do you want with your pacstrap?\n(Basically extra stuff with your 
 read -p "> " ADDONS
 
 printf "Pacstrapping...\nMa wenor...\mand by wenor...\nlets just say\nmy kernel\n"
-pacstrap -K "$ROOT" base linux linux-firmware sudo $NET_PKG $ADDONS
+pacstrap -K "$ROOT" base linux linux-firmware $NET_PKG $ADDONS
 
 echo "Writing the map (fstab)..."
 genfstab -U "$ROOT" >> "$ROOT/etc/fstab"
@@ -222,7 +227,7 @@ if [[ "$MODE" == "UEFI" ]]; then
 	read -p "Selection: " BOOTCHOICE
 
 	case $BOOTCHOICE in
-		1)
+    1)
 			echo "Installing GRUB..."
 			arch-chroot "$ROOT" pacman -S --noconfirm grub efibootmgr
 			arch-chroot "$ROOT" grub-install --target=x86_64-efi --bootloader-id=GRUB
@@ -241,16 +246,17 @@ if [[ "$MODE" == "UEFI" ]]; then
 			arch-chroot "$ROOT" cp /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/
 			(/usr/bin/cat <<EOF
 TIMEOUT=5
+
 :Arch Linux
     PROTOCOL=linux
     KERNEL_PATH=boot:///vmlinuz-linux
     MODULE_PATH=boot:///initramfs-linux.img
-    CMDLINE=root=UUID=$RUUID 
+    CMDLINE=root=UUID=$RUUID rw
 EOF
 ) > "$ROOT/boot/limine.conf"
 			arch-chroot "$ROOT" efibootmgr --create --entities --disk "$DISK" --part "$B_PART_NUM" --loader /EFI/BOOT/BOOTX64.EFI --label "Limine"
 			;;
-		*)
+    *)
 			echo "Skipping bootloader. Good luck, soldier."
 			;;
 	esac
@@ -263,67 +269,69 @@ fi
 echo "Now to make your system usable so you don't go 'Aaaa why can't I login!?'"
 read -p 'What is your HOSTNAME? (Computers online name): ' HOSTNAME
 read -sp 'Now root password? *Looks away*: ' ROOTPSWD
-echo -e "\n"
 read -p "*peeks* ok now LOCATION? (example 'Europe/Istanbul'): " ZONEINFO
 echo "root:$ROOTPSWD" | arch-chroot "$ROOT" chpasswd
-arch-chroot "$ROOT" bash -c "ln -sf /usr/share/zoneinfo/$ZONEINFO /etc/localtime && hwclock --systohc"
+arch-chroot "$ROOT" bash -c 'ln -sf "/usr/share/zoneinfo/$ZONEINFO" "/etc/localtime"; hwclock --systohc'
 arch-chroot "$ROOT" bash -c "echo $HOSTNAME > /etc/hostname"
 if [ -n "$NET_SVC" ]; then
 	arch-chroot "$ROOT" systemctl enable "$NET_SVC"
 fi
 
 echo "ALMOST finished... wanna make an user? (For people who doesn't wanna run ONLY root)"
-read -n1 -rp "[Y/N]: " USER
-echo ""
+read -n1 -rp "[Y/N]" USER
 
 if [[ "$USER" =~ ^[Yy]$ ]]; then
-	read -p "Username: " USERNAME
-	read -sp "Password: " USERPSWD
-	echo -e "\n"
-	read -n1 -rp "Give $USERNAME sudo powers (WHEEL group)? [Y/N]: " USERWHEEL
-	echo -e "\n"
-	read -p "Other groups? (Press 'L' for list): " USERGROUPS
+	read -p "What should be the Username? (Example: fera): " USERNAME
+	read -sp "What about password? (You can keep it none if you want, Not recomended): " USERPSWD
+	read -n1 -rp "Ok should this user be in WHEEL group?: [Y/N]" USERWHEEL
+	read -p "What about other groups?: " USERGROUPS
 	
 	if [[ "${USERGROUPS,,}" == "l" ]]; then
 		echo "-----------------------------------------------------------------------"
-		echo "  audio, video, storage, optical, input, kvm, lp, network, scanner"
+		echo "  1) input						- Can use SUDO (The most important one!)"
+		echo "  2) audio						- To hear sound/music"
+		echo "  3) video						- For hardware acceleration/GPU"
+		echo "  4) storage					- To mount USB drives/External disks"
+		echo "  5) optical					- For CD/DVD access"
+		echo "  6) lp								- For Printing"
+		echo "  7) network					- To manage wifi/ethernet"
+		echo "  8) storage					- Allows Mounting/Unmounting USB and DRIVES without root"
+		echo "  9) optical					- Your CD(eez nutz) and DVD group for old devices"
+		echo " 10) kvm							- Simple Virtual machine optimizer"
+		echo " 11) lp (or lpadmin)	- If you have a printer and want to manage it"
 		echo "-----------------------------------------------------------------------"
-		read -p "Enter groups: " USERGROUPS
+		read -p "What groups: " USERGROUPS
 	fi
-	
-	echo "Processing groups..."
-	# Smart Format Fixer (Space or Comma)
+	echo "Ok now sit tight"
 	if [[ "$USERGROUPS" == *","* ]]; then
-		USERGROUPS=${USERGROUPS// /}
-	else
-		USERGROUPS=$(echo "$USERGROUPS" | tr -s ' ' ',')
-	fi
-	USERGROUPS=$(echo "$USERGROUPS" | sed 's/^,//;s/,$//')
+      USERGROUPS=${USERGROUPS// /}
+    else
+      USERGROUPS=$(echo "$USERGROUPS" | tr -s ' ' ',')
+    fi
+  USERGROUPS=$(echo "$USERGROUPS" | sed 's/^,//;s/,$//')
 
 	FINAL_GROUPS="$USERGROUPS"
-	if [[ "$USERWHEEL" =~ ^[Yy]$ ]]; then
-		[[ -z "$FINAL_GROUPS" ]] && FINAL_GROUPS="wheel" || FINAL_GROUPS="${FINAL_GROUPS%,},wheel"
+  if [[ "$USERWHEEL" =~ ^[Yy]$ ]]; then
+    [[ -z "$FINAL_GROUPS" ]] && FINAL_GROUPS="wheel" || FINAL_GROUPS="${FINAL_GROUPS},wheel"
 	fi
 
 	echo "Creating user $USERNAME with groups: $FINAL_GROUPS"
-	arch-chroot "$ROOT" useradd -m -G "$FINAL_GROUPS" "$USERNAME"
-	echo "$USERNAME:$USERPSWD" | arch-chroot "$ROOT" chpasswd
+  arch-chroot "$ROOT" useradd -m -G "$FINAL_GROUPS" "$USERNAME"
+  echo "$USERNAME:$USERPSWD" | arch-chroot "$ROOT" chpasswd
 	
 	if [[ "$USERWHEEL" =~ ^[Yy]$ ]]; then
-		arch-chroot "$ROOT" sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
-	fi
+    arch-chroot "$ROOT" sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+  fi
 fi
-
 # --- 10. ENDING ---
 clear
 echo "Congratulations captain! We got to the other end of the factory floor!"
 echo "To run Arch you just have to reboot... I mean I can reboot for you :3c"
-read -n1 -rp "[Y/N]: " ENDING
-echo ""
+read -n1 -rp "[Y/N]" ENDING
 if [[ $ENDING =~ ^[Yy]$ ]]; then
 	echo "Restarting..."
 	umount -R "$ROOT"
 	reboot now
 fi
-echo "Ok I won't... exit manually when ready."
+echo "Ok I won't..."
 exit 0
